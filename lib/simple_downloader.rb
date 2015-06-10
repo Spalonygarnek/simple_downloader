@@ -12,6 +12,8 @@ module SimpleDownloader
     attr_accessor :protocol
     # @return [String] Server name
     attr_accessor :server
+    # @return [Fixnum] connection port
+    attr_accessor :port
     # @return [String] Username
     attr_accessor :user
     # @return [String] Password
@@ -22,10 +24,6 @@ module SimpleDownloader
     attr_accessor :retry_timeout
     # @return [Fixnum] Timeout of attempt in ms when server is not responding
     attr_accessor :retry_timeout_when_server_down
-    # @return [Fixnum] connection port
-    attr_accessor :port
-
-    attr_reader :supported_protocols
 
 
     # @param protocol[String, Symbol] one of supported protocols
@@ -41,25 +39,34 @@ module SimpleDownloader
         server = raise('Server is required'),
         opts = {}
     )
-      # merge options
-      default_options = {port: 22, retry_attempts: 3, retry_timeout: 10, retry_timeout_when_server_down: 180}
-      options = default_options.update opts
 
-      supported_protocols = ['sftp']
       @protocol = protocol.to_s.downcase
+      supported_protocols = ['sftp']
       raise('Unsupported protocol') unless supported_protocols.include? @protocol
-
       @server = server.to_s
 
-      if ['sftp'].include? @protocol
-        options[:user] ||= raise('User is required parameter')
-        @user = options[:user]
+      required_options = {
+          'sftp' => [:user, :password]
+      }
 
-        options[:password] ||= raise('Password is required parameter')
-        @password = options[:password]
 
+      case @protocol
+        when 'sftp'
+          default_options = {port: 22, retry_attempts: 3, retry_timeout: 10, retry_timeout_when_server_down: 180}
+
+        else
+          default_options = {retry_attempts: 3, retry_timeout: 10, retry_timeout_when_server_down: 180}
       end
+      # merge options
+      options = default_options.update opts
 
+
+      options.each { |option, value|
+        raise("#{option} is required parameter") if required_options[@protocol].include? option && value == nil rescue false
+      }
+
+      @user = options[:user]
+      @password = options[:password]
       @port = options[:port]
       @retry_attempts = options[:retry_attempts]
       @retry_timeout = options[:retry_timeout]
@@ -126,7 +133,7 @@ module SimpleDownloader
       default_options = {overwrite: false, rename: false, temp_folder: 'tmp'}
       options = default_options.update opts
       # Parse directory path and delete unnecessary '/' symbol at the end
-      local_directory[-1] == '/' ? local_dir = local_directory[0..-2] : local_dir = local_directory
+      local_directory.gsub!(/\/$/, '')
       overwrite = options[:overwrite]
       rename = options[:rename]
       temp_folder = options[:temp_folder]
@@ -149,7 +156,7 @@ module SimpleDownloader
               remote_file_object.already_uploaded = true
 
               rename == false ? local_file_name = remote_file.name : local_file_name = FIle.basename(rename)
-              local_path = local_dir + '/' + local_file_name
+              local_path = local_directory + '/' + local_file_name
               file_already_exist = File.file?(local_path)
 
               # Overwrite local file if file already exist
@@ -176,6 +183,7 @@ module SimpleDownloader
         else
           raise "Unsupported protocol #{self.protocol}"
       end
+      remote_file_object.downloaded = true
       remote_file_object
     end
 
@@ -191,7 +199,7 @@ module SimpleDownloader
       default_options = {overwrite: false, rename: false}
       options = default_options.update opts
 
-      remote_directory[-1] == '/' ? remote_dir = remote_directory[0..-2] : remote_dir = remote_directory
+      remote_directory.gsub!(/\/$/, '')
       overwrite = options[:overwrite]
       rename = options[:rename]
 
@@ -200,13 +208,13 @@ module SimpleDownloader
 
 
         when 'sftp'
-          self.connect(remote_dir) { |sftp|
+          self.connect(remote_directory) { |sftp|
 
             file_name = File.basename(local_file_object.path)
 
             rename == false ? new_file_name = file_name : new_file_name = File.basename(rename)
 
-            remote_file = sftp.dir.[](remote_dir, new_file_name).sort_by { |file| file.attributes.mtime }.reverse.first
+            remote_file = sftp.dir.[](remote_directory, new_file_name).sort_by { |file| file.attributes.mtime }.reverse.first
             remote_path = remote_dir +'/'+ new_file_name
             if remote_file != nil
               local_file_object.remote_exist = true
@@ -214,7 +222,7 @@ module SimpleDownloader
               if overwrite
                 sftp.remove!(remote_path)
                 sftp.upload!(local_file_object.path, remote_path)
-                remote_file = sftp.dir.[](remote_dir, new_file_name).sort_by { |file| file.attributes.mtime }.reverse.first
+                remote_file = sftp.dir.[](remote_directory, new_file_name).sort_by { |file| file.attributes.mtime }.reverse.first
                 remote_file_time = Time.at(remote_file.attributes.mtime)
                 local_file_object.remote_file_time = remote_file_time
               end
@@ -222,7 +230,7 @@ module SimpleDownloader
             else
               local_file_object.remote_exist = false
               sftp.upload!(local_file_object.path, remote_path)
-              remote_file = sftp.dir.[](remote_dir, new_file_name).sort_by { |file| file.attributes.mtime }.reverse.first
+              remote_file = sftp.dir.[](remote_directory, new_file_name).sort_by { |file| file.attributes.mtime }.reverse.first
               remote_file_time = Time.at(remote_file.attributes.mtime)
               local_file_object.remote_file_time = remote_file_time
             end
@@ -234,6 +242,7 @@ module SimpleDownloader
         else
           raise "Unsupported protocol #{self.protocol}"
       end
+      local_file_object.uploaded = true
       local_file_object
     end
 
@@ -286,6 +295,8 @@ module SimpleDownloader
     attr_accessor :remote_file_time
     # @return [true, false, nil] shows path where file was uploaded last time
     attr_accessor :remote_exist
+    # @return [true, false] shows if file was successfully uploaded
+    attr_accessor :uploaded
 
     # @param path[String] local file path
     def initialize(path =  raise('Path is required field')    )
@@ -293,6 +304,7 @@ module SimpleDownloader
       @remote_path = nil
       @remote_file_time = nil
       @remote_exist = nil
+      @uploaded = false
     end
   end
 
@@ -308,6 +320,8 @@ module SimpleDownloader
     attr_accessor :remote_file_time
     # @return [String] path where remote file was saved
     attr_accessor :local_path
+    # @return [true, false] shows if file was successfully uploaded
+    attr_accessor :downloaded
 
     # @param path[String] path OR GLOB PATTERN to find remote file. You can use Glob pattern only in file basename but not in dirname.
     def initialize(path =  raise('Path is required field')    )
@@ -315,6 +329,7 @@ module SimpleDownloader
       @already_uploaded = nil
       @remote_file_time = nil
       @local_path = nil
+      @downloaded = false
     end
 
   end
