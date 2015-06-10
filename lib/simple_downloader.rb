@@ -166,6 +166,7 @@ module SimpleDownloader
 
               # check file with the same name on the local machine
               remote_file_object.local_file_exist = File.file?(local_path)
+              remote_file_object.download_path = local_path
 
               # Overwrite local file if file already exist
               unless overwrite == false && remote_file_object.local_file_exist
@@ -176,7 +177,6 @@ module SimpleDownloader
                 temp_file.print remote_file_content
                 temp_file.close
                 FileUtils.mv(temp_file_path, local_path, {:force => true, :verbose => true}) if temp_file_path != local_path
-                remote_file_object.download_path = local_path
                 remote_file_object.downloaded = true
                 remote_file_time = Time.at(remote_file.attributes.mtime)
                 remote_file_object.remote_file_time = remote_file_time
