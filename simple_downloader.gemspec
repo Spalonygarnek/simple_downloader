@@ -9,8 +9,8 @@ Gem::Specification.new do |spec|
   spec.authors       = ["yuri-karpovich"]
   spec.email         = ["spoonest@gmail.com"]
 
-  spec.summary       = "Download, Upload files from SFTP"
-  spec.description   = "This gem is not ready for use. Please do not install it."
+  spec.summary       = "Please do not install it! Download, Upload files from SFTP"
+  spec.description   = "This gem is not ready for use."
   spec.homepage      = "https://github.com/yuri-karpovich/simple_downloader"
 
   spec.files         = `git ls-files -z`.split("\x0").reject { |f| f.match(%r{^(test|spec|features)/}) }

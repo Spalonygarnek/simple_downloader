@@ -137,30 +137,36 @@ module SimpleDownloader
       overwrite = options[:overwrite]
       rename = options[:rename]
       temp_folder = options[:temp_folder]
+
       # Create temp folder if it doesn't exist
       FileUtils.mkdir_p temp_folder
+
       # Parse remote file name (or name pattern) and directory path
       remote_directory = File.dirname(remote_file_object.path)
       filename_pattern = File.basename(remote_file_object.path)
 
+
+
+
       case self.protocol
-
-
 
         when 'sftp'
           self.connect(remote_directory) { |sftp|
             # Search remote file
-            remote_file = sftp.dir.[](remote_directory, filename_pattern).sort_by { |file| file.attributes.mtime }.reverse.first
+            remote_file = sftp.dir.[](remote_directory, filename_pattern).sort_by { |file| file.attributes.mtime }.reverse.first # rescue nil
             # if remote file was found...
             if remote_file != nil
-              remote_file_object.already_uploaded = true
+              remote_file_object.remote_file_exist = true
 
-              rename == false ? local_file_name = remote_file.name : local_file_name = FIle.basename(rename)
+              # rename if required
+              rename == false ? local_file_name = remote_file.name : local_file_name = File.basename(rename)
               local_path = local_directory + '/' + local_file_name
-              file_already_exist = File.file?(local_path)
+
+              # check file with the same name on the local machine
+              remote_file_object.local_file_exist = File.file?(local_path)
 
               # Overwrite local file if file already exist
-              unless overwrite == false && file_already_exist
+              unless overwrite == false && remote_file_object.local_file_exist
                 temp_file_path = temp_folder + '/' + local_file_name
                 FileUtils.rm temp_file_path if File.file?(temp_file_path)
                 remote_file_content = sftp.download!(remote_directory + '/' + remote_file.name)
@@ -168,13 +174,14 @@ module SimpleDownloader
                 temp_file.print remote_file_content
                 temp_file.close
                 FileUtils.mv(temp_file_path, local_path, {:force => true, :verbose => true}) if temp_file_path != local_path
+                remote_file_object.download_path = local_path
+                remote_file_object.downloaded = true
                 remote_file_time = Time.at(remote_file.attributes.mtime)
                 remote_file_object.remote_file_time = remote_file_time
               end
-              remote_file_object.local_path = local_path
 
             else
-              remote_file_object.already_uploaded = false
+              remote_file_object.remote_file_exist = false
             end
           }
 
@@ -183,7 +190,6 @@ module SimpleDownloader
         else
           raise "Unsupported protocol #{self.protocol}"
       end
-      remote_file_object.downloaded = true
       remote_file_object
     end
 
@@ -198,7 +204,6 @@ module SimpleDownloader
       # merge options
       default_options = {overwrite: false, rename: false}
       options = default_options.update opts
-
       remote_directory.gsub!(/\/$/, '')
       overwrite = options[:overwrite]
       rename = options[:rename]
@@ -206,43 +211,50 @@ module SimpleDownloader
       case self.protocol
 
 
-
         when 'sftp'
           self.connect(remote_directory) { |sftp|
-
             file_name = File.basename(local_file_object.path)
 
+            # change file name if rename option
             rename == false ? new_file_name = file_name : new_file_name = File.basename(rename)
+            remote_path = remote_directory +'/'+ new_file_name
 
+            # check that remote file exist
             remote_file = sftp.dir.[](remote_directory, new_file_name).sort_by { |file| file.attributes.mtime }.reverse.first
-            remote_path = remote_dir +'/'+ new_file_name
             if remote_file != nil
-              local_file_object.remote_exist = true
 
+              # save information about remote file
+              local_file_object.remote_file_exist = true
+              remote_file_time = Time.at(remote_file.attributes.mtime)
+              local_file_object.remote_file_time = remote_file_time
+
+              # upload file only if overwrite option
               if overwrite
                 sftp.remove!(remote_path)
-                sftp.upload!(local_file_object.path, remote_path)
+                local_file_object.upload_path = sftp.upload!(local_file_object.path, remote_path).remote
+                # save information about uploaded file
+                local_file_object.uploaded = true
                 remote_file = sftp.dir.[](remote_directory, new_file_name).sort_by { |file| file.attributes.mtime }.reverse.first
                 remote_file_time = Time.at(remote_file.attributes.mtime)
                 local_file_object.remote_file_time = remote_file_time
               end
 
             else
-              local_file_object.remote_exist = false
-              sftp.upload!(local_file_object.path, remote_path)
+              # save information tht there is no remote file
+              local_file_object.remote_file_exist = false
+              local_file_object.upload_path = sftp.upload!(local_file_object.path, remote_path).remote
+              # save info that file uploaded
+              local_file_object.uploaded = true
               remote_file = sftp.dir.[](remote_directory, new_file_name).sort_by { |file| file.attributes.mtime }.reverse.first
               remote_file_time = Time.at(remote_file.attributes.mtime)
               local_file_object.remote_file_time = remote_file_time
             end
-            local_file_object.remote_path = remote_path
           }
-
 
 
         else
           raise "Unsupported protocol #{self.protocol}"
       end
-      local_file_object.uploaded = true
       local_file_object
     end
 
@@ -290,21 +302,21 @@ module SimpleDownloader
     # @return [String] local file path
     attr_accessor :path
     # @return [String] path where file was uploaded
-    attr_accessor :remote_path
+    attr_accessor :upload_path
     # @return [Date, nil] last modified time of remote file copy
     attr_accessor :remote_file_time
     # @return [true, false, nil] shows path where file was uploaded last time
-    attr_accessor :remote_exist
+    attr_accessor :remote_file_exist
     # @return [true, false] shows if file was successfully uploaded
     attr_accessor :uploaded
 
     # @param path[String] local file path
     def initialize(path =  raise('Path is required field')    )
       @path = path
-      @remote_path = nil
-      @remote_file_time = nil
-      @remote_exist = nil
+      @upload_path = nil
       @uploaded = false
+      @remote_file_time = nil
+      @remote_file_exist = nil
     end
   end
 
@@ -314,22 +326,25 @@ module SimpleDownloader
     
     # @return [String] path OR GLOB PATTERN to find remote file. You can use Glob pattern only in file basename but not in dirname.
     attr_accessor :path
-    # @return[:true, false, nil] shows if remote file already exist on server
-    attr_accessor :already_uploaded
+    # @return[:true, false, nil] shows if remote file exists on server
+    attr_accessor :remote_file_exist
     # @return [Date, nil] last modified time of remote file
     attr_accessor :remote_file_time
     # @return [String] path where remote file was saved
-    attr_accessor :local_path
-    # @return [true, false] shows if file was successfully uploaded
+    attr_accessor :download_path
+    # @return [true, false] shows if file was successfully downloaded
     attr_accessor :downloaded
+    # @return [true, false] shows if local file exists
+    attr_accessor :local_file_exist
 
     # @param path[String] path OR GLOB PATTERN to find remote file. You can use Glob pattern only in file basename but not in dirname.
     def initialize(path =  raise('Path is required field')    )
       @path = path
-      @already_uploaded = nil
-      @remote_file_time = nil
-      @local_path = nil
+      @download_path = nil
       @downloaded = false
+      @remote_file_time = nil
+      @remote_file_exist = nil
+      @local_file_exist = nil
     end
 
   end
