@@ -23,31 +23,7 @@ Or install it yourself as:
 
 ## Usage
 
-**Download file:**
-
-
-**Upload file:**
-
-```ruby
-file = SimpleDownloader::FileUploader.new('sftp', 'host.com', '/path/to/your/file/file.txt', {
-                                                    user: 'your_login',
-                                                    password: 'your_password',                                               
-                                                    retry_attempts: 5,
-                                                    retry_timeout: 20,
-                                                    retry_timeout_when_server_down: 180
-                                                })
-file.upload_file('/upload/folder/', rename: 'new_name.doc', overwrite: true)
-```
-
-
-##Classes and Methods
-####FileDownloader class
-- `is_exist?` 
-- `download_file`
-
-####FileUploader
-- `upload_file`
-
+TODO Describe 
 
 ## Development
 
