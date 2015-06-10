@@ -46,7 +46,7 @@ module SimpleDownloader
       @server = server.to_s
 
       required_options = {
-          'sftp' => [:user, :password]
+          'sftp' => [:user]
       }
 
 
@@ -96,8 +96,12 @@ module SimpleDownloader
 
 
 
-          when 'sftp'
-            Net::SFTP.start(self.server, self.user, :password => self.password, :port => self.port) do |sftp|
+            when 'sftp'
+            # Connecting using public/private keys if no password
+              self.password != nil ?
+                  options = {:password => self.password, :port => self.port} :
+                  options = {:port => self.port}
+            Net::SFTP.start(self.server, self.user, options) do |sftp|
               sftp.stat!(remote_directory) do |response|
                 # Check connection for the remote folder
                 if response.ok?
@@ -192,6 +196,7 @@ module SimpleDownloader
       end
       remote_file_object
     end
+
 
     # Upload file to storage.
     #

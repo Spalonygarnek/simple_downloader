@@ -10,3 +10,4 @@
 /vendor/
 *.gem
 .idea/*
+spec/gitignored_spec.rb
