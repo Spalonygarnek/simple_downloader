@@ -61,9 +61,7 @@ module SimpleDownloader
       options = default_options.update opts
 
 
-      options.each { |option, value|
-        raise("#{option} is required parameter") if required_options[@protocol].include? option && value == nil rescue false
-      }
+      raise("One or required parameters missing (#{required_options[@protocol].join(', ')})") if options.keys & required_options[@protocol] == []
 
       @user = options[:user]
       @password = options[:password]
