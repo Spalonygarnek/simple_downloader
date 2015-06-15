@@ -2,38 +2,22 @@ require "simple_downloader/version"
 require 'active_support'
 require 'retryable'
 require 'net/sftp'
+require 'net/ssh'
 
 
 module SimpleDownloader
 
-  # Describes remote storage
   class Storage
-    # @return [String, #downcase] Protocol name
     attr_accessor :protocol
-    # @return [String] Server name
     attr_accessor :server
-    # @return [Fixnum] connection port
     attr_accessor :port
-    # @return [String] Username
     attr_accessor :user
-    # @return [String] Password
     attr_accessor :password
-    # @return [Fixnum] Number of attempts to upload\download file
     attr_accessor :retry_attempts
-    # @return [Fixnum] Timeout of attempt in ms
     attr_accessor :retry_timeout
-    # @return [Fixnum] Timeout of attempt in ms when server is not responding
     attr_accessor :retry_timeout_when_server_down
+    attr_accessor :connection
 
-
-    # @param protocol[String, Symbol] one of supported protocols
-    # @param server[String] server name
-    # @option opts [String] :user username
-    # @option opts [String] :password password
-    # @option opts [String] :port port
-    # @option opts [Fixnum] :retry_attempts Number of attempts to perform operation
-    # @option opts [Fixnum] :retry_timeout Operation timeout
-    # @option opts [Fixnum] :retry_timeout_when_server_down Operation timeout when server is not responding
     def initialize(
         protocol = raise('Protocol is required'),
         server = raise('Server is required'),
@@ -69,51 +53,24 @@ module SimpleDownloader
       @retry_attempts = options[:retry_attempts]
       @retry_timeout = options[:retry_timeout]
       @retry_timeout_when_server_down = options[:retry_timeout_when_server_down]
+      @connection = nil
 
     end
 
-
-    # Establish connection *yield* method.
-    #
-    # @param optional remote_path[String] path used for verification that connection can be successfully established.
-    # @yieldparam sftp[Net::SFTP::Session] sftp session
-    # @return [true, false]
-    # @example check that connection to the remote host can be established
-    #     sftp.connect
-    #     => true
-    # @example use sftp connection yield
-    #     self.connect(remote_directory) { |sftp|
-    #     sftp.dir.[](remote_directory, filename_pattern).sort_by { |file| file.attributes.mtime }.reverse.first
-    #     }
-    def connect(remote_path = nil, &block)
-      remote_directory = remote_path || '/'
+    def connect
       result = nil
       Retryable.retryable(:tries => self.retry_attempts, :matching => /connection closed by remote host/, :sleep => self.retry_timeout) do
         Retryable.retryable(:tries => self.retry_attempts, :matching => /getaddrinfo: Name or service not known/, :sleep => self.retry_timeout_when_server_down) do
           case self.protocol
-
-
-
             when 'sftp'
-            # Connecting using public/private keys if no password
+              # Connecting using public/private keys if no password
               self.password != nil ?
                   options = {:password => self.password, :port => self.port} :
                   options = {:port => self.port}
-            Net::SFTP.start(self.server, self.user, options) do |sftp|
-              sftp.stat!(remote_directory) do |response|
-                # Check connection for the remote folder
-                if response.ok?
-                  yield sftp if block != nil
-                  result = true
-                else
-                  result = false
-                  puts "Bad response. Possible reason: directory doesn't exist"
-                end
-              end
-            end
-
-
-
+              # create new connection
+              session = Net::SSH.start(self.server, self.user, options)
+              self.connection = Net::SFTP::Session.new(session).connect!
+              self.connection.state == :open ? result = true : result = false
             else
               raise "Unsupported protocol #{self.protocol}"
           end
@@ -122,236 +79,301 @@ module SimpleDownloader
       result
     end
 
+    def disconnect
+      self.connection.close_channel unless self.connection.closed?
+      self.connection = nil
+    end
 
-    # Download file from storage.
-    #
-    # @param remote_file_object[SimpleDownloader::RemoteFile] remote file object to be downloaded
-    # @param local_directory[String] path to save downloads
-    # @option opts [true, false] :overwrite should local file be overwritten
-    # @option opts [false, String] :rename should downloaded file be renamed while saving? Specify file name if you want to rename file
-    # @option opts [String] :temp_folder folder where to save temp files. Defaukt tmp folder will be created if doesn't exist
-    # @return [SimpleDownloader::RemoteFile] remote file object
-    def download_file(remote_file_object, local_directory,  opts = {})
-      default_options = {overwrite: false, rename: false, temp_folder: 'tmp'}
-      options = default_options.update opts
-      # Parse directory path and delete unnecessary '/' symbol at the end
-      local_directory.gsub!(/\/$/, '')
-      overwrite = options[:overwrite]
-      rename = options[:rename]
-      temp_folder = options[:temp_folder]
-
-      # Create temp folder if it doesn't exist
-      FileUtils.mkdir_p temp_folder
-
-      # Parse remote file name (or name pattern) and directory path
-      remote_directory = File.dirname(remote_file_object.path)
-      filename_pattern = File.basename(remote_file_object.path)
-
-
-
-
+    def download_file(remote_file)
+      raise 'Please specify Download Directory' if remote_file.download_dir == nil
       case self.protocol
-
         when 'sftp'
-          self.connect(remote_directory) { |sftp|
-            # Search remote file
-            remote_file = sftp.dir.[](remote_directory, filename_pattern).sort_by { |file| file.attributes.mtime }.reverse.first # rescue nil
+          # use existing connection
+          self.connect if self.connection == nil
+          sftp = self.connection
+          check_remote_existence!(remote_file)
             # if remote file was found...
-            if remote_file != nil
-              remote_file_object.remote_file_exist = true
-
-              # rename if required
-              rename == false ? local_file_name = remote_file.name : local_file_name = File.basename(rename)
-              local_path = local_directory + '/' + local_file_name
-
+            if remote_file.exist
               # check file with the same name on the local machine
-              remote_file_object.local_file_exist = File.file?(local_path)
-              remote_file_object.download_path = local_path
-
-              # Overwrite local file if file already exist
-              unless overwrite == false && remote_file_object.local_file_exist
-                temp_file_path = temp_folder + '/' + local_file_name
-                FileUtils.rm temp_file_path if File.file?(temp_file_path)
-                remote_file_content = sftp.download!(remote_directory + '/' + remote_file.name)
-                temp_file = File.open(temp_file_path, 'wb')
-                temp_file.print remote_file_content
-                temp_file.close
-                FileUtils.mv(temp_file_path, local_path, {:force => true, :verbose => true}) if temp_file_path != local_path
-                remote_file_object.downloaded = true
-                remote_file_time = Time.at(remote_file.attributes.mtime)
-                remote_file_object.remote_file_time = remote_file_time
+              remote_file.local_file_exist = File.file?(remote_file.download_path)
+              if remote_file.local_file_exist
+                if remote_file.overwrite
+                  FileUtils.rm remote_file.download_path
+                else
+                  raise 'File cannot be downloaded. Local file with the same name exists'
+                end
               end
 
+              remote_file_content = sftp.download!(remote_file.path)
+              result_file = File.open(remote_file.download_path, 'wb')
+              result_file.print remote_file_content
+              result_file.close
+              remote_file.downloaded = true
+
             else
-              remote_file_object.remote_file_exist = false
+              raise "There is no file to download #{remote_file.path}"
             end
-          }
-
-
-
         else
           raise "Unsupported protocol #{self.protocol}"
       end
-      remote_file_object
+      remote_file
     end
 
-
-    # Upload file to storage.
-    #
-    # @param local_file_object[SimpleDownloader::LocalFile] local file object to be uploaded
-    # @param remote_directory[String] path to save uploads
-    # @option opts [true, false] :overwrite should remote file be overwritten?
-    # @option opts [false, String] :rename should remote file be renamed while saving? Specify file name if you want to rename file
-    # @return [SimpleDownloader::LocalFile] local file object
-    def upload_file(local_file_object = raise("local_file_object is required"), remote_directory = raise("remote_directory is required"), opts = {})
-      # merge options
-      default_options = {overwrite: false, rename: false}
-      options = default_options.update opts
-      remote_directory.gsub!(/\/$/, '')
-      overwrite = options[:overwrite]
-      rename = options[:rename]
-
+    def upload_file(local_file = raise("local_file is required"))
+      raise 'Please specify upload directory' if local_file.upload_dir == nil
       case self.protocol
-
-
         when 'sftp'
-          self.connect(remote_directory) { |sftp|
-            file_name = File.basename(local_file_object.path)
-
-            # change file name if rename option
-            rename == false ? new_file_name = file_name : new_file_name = File.basename(rename)
-            remote_path = remote_directory +'/'+ new_file_name
-
-            # check that remote file exist
-            remote_file = sftp.dir.[](remote_directory, new_file_name).sort_by { |file| file.attributes.mtime }.reverse.first
-            if remote_file != nil
-
-              # save information about remote file
-              local_file_object.remote_file_exist = true
-              remote_file_time = Time.at(remote_file.attributes.mtime)
-              local_file_object.remote_file_time = remote_file_time
-
-              # upload file only if overwrite option
-              if overwrite
-                sftp.remove!(remote_path)
-                local_file_object.upload_path = sftp.upload!(local_file_object.path, remote_path).remote
-                # save information about uploaded file
-                local_file_object.uploaded = true
-                remote_file = sftp.dir.[](remote_directory, new_file_name).sort_by { |file| file.attributes.mtime }.reverse.first
-                remote_file_time = Time.at(remote_file.attributes.mtime)
-                local_file_object.remote_file_time = remote_file_time
+          # Check local file existence
+          if File.file?(local_file.path)
+            local_file.mtime= Time.at(File.mtime(local_file.path))
+            # use existing connection
+            self.connect if self.connection == nil
+            sftp = self.connection
+            remote_file = RemoteFile.new(local_file.upload_path)
+            local_file.remote_file_exist= check_remote_existence!(remote_file).exist
+            if remote_file.exist
+              if local_file.overwrite
+                sftp.remove!(local_file.upload_path)
+              else
+                raise 'File cannot be uploaded because remote file with the same name exists'
               end
-
-            else
-              # save information tht there is no remote file
-              local_file_object.remote_file_exist = false
-              local_file_object.upload_path = sftp.upload!(local_file_object.path, remote_path).remote
-              # save info that file uploaded
-              local_file_object.uploaded = true
-              remote_file = sftp.dir.[](remote_directory, new_file_name).sort_by { |file| file.attributes.mtime }.reverse.first
-              remote_file_time = Time.at(remote_file.attributes.mtime)
-              local_file_object.remote_file_time = remote_file_time
             end
-          }
-
-
+            sftp.upload!(local_file.path, local_file.upload_path)
+            # save information about uploaded file
+            local_file.uploaded = true
+          else
+            local_file.exist = false
+            raise "There is no such file #{local_file.path}"
+          end
         else
           raise "Unsupported protocol #{self.protocol}"
       end
-      local_file_object
+
+      local_file
     end
 
-    # Check if remote file exist on server.
-    # method updates *exist* object variable
-    #
-    # @param remote_file[SimpleDownloader::RemoteFile] remote file object.
-    #   You can use glob pattern in the remote file basename only! The remote file  dirname doesn't support glob patterns!
-    # @return [true, false]
-    def is_exist?(remote_file = raise('remote_file parameter is required'))
-      result = nil
+    def check_remote_existence!(remote_file = raise('remote_file parameter is required'))
       case self.protocol
-
-
-
         when 'sftp'
-          # Parse name pattern to file name and file path
-          remote_directory = File.dirname(remote_file.path)
-          filename_pattern = File.basename(remote_file.path)
-          # Connect to sftp
-          self.sftp_connect(remote_directory) { |sftp|
+          # connect if not connected
+          self.connect if self.connection == nil
+          sftp = self.connection
             # Search remote file by its name pattern
-            remote_file = sftp.dir.[](remote_directory, filename_pattern).sort_by { |file| file.attributes.mtime }.reverse.first
-            # If remote file was found...
-            if remote_file != nil
-              result = true
-            else
-              result = false
-            end
-          }
-
-
+          found_on_remote = self.glob_remote_files(remote_file.dir, remote_file.name).first
+          if found_on_remote == nil
+            remote_file.exist = false
+          else
+            remote_file.path = found_on_remote.path
+            remote_file.exist = found_on_remote.exist
+            remote_file.mtime = found_on_remote.mtime
+          end
 
         else
           raise "Unsupported protocol"
       end
-      remote_file.exist = result
+      remote_file
+    end
+
+    def move_remote_file(remote_file = raise("remote_file_object is required"), new_directory = raise("new_directory is required"), opts = {})
+      # merge options
+      default_options = {overwrite: false, rename: false}
+      options = default_options.update opts
+      # save overwrite option
+      remote_file.overwrite = options[:overwrite]
+      # save rename option. Use desired name and don't worry about rename anymore
+      remote_file.will_rename = options[:rename]
+      # gsub last '/' symbol
+      new_directory.gsub!(/\/$/, '')
+
+
+      case self.protocol
+        when 'sftp'
+          # connect if not connected
+          self.connect if self.connection == nil
+          sftp = self.connection
+            # found remote file to process
+            found_on_remote = self.glob_remote_files(remote_file.dir, remote_file.name).first
+            if found_on_remote != nil
+              # save exist and mtime attributes
+              remote_file.exist= true
+              remote_file.mtime= found_on_remote.mtime
+              # check if file with the same name exists
+              destination_path = new_directory + '/' + remote_file.desired_name
+              destination_file = self.glob_remote_files(new_directory, remote_file.desired_name).first
+              # overwrite existing file
+              if destination_file != nil
+                if remote_file.overwrite
+                  sftp.remove!(destination_path)
+                  code = sftp.rename!(remote_file.path, destination_path).code
+                  raise "Error while file rename: code #{code}" if code != 0
+                end
+              else
+                code = sftp.rename!(remote_file.path, destination_path).code
+                raise "Error while file rename: code #{code}" if code != 0
+              end
+              # update path 
+              remote_file.path = destination_path
+            else
+              remote_file.exist= false
+              raise "There is no such file #{remote_file.path}"
+            end
+        else
+          raise "Unsupported protocol #{self.protocol}"
+      end
+
+      remote_file
+    end
+
+    def glob_remote_files(remote_directory, remote_file_name = nil, silent = true)
+      remote_directory.gsub!(/\/$/, '')
+      file_patterns = nil
+      case remote_file_name
+        when NilClass
+          file_patterns = ['*']
+        when String
+          file_patterns = [remote_file_name]
+        when Array
+          file_patterns = file_patterns
+        else
+          raise 'Invalid remote file name parameter'
+      end
+      remote_files = []
+
+      # use existing connection
+      self.connect if self.connection == nil
+      sftp = self.connection
+
+      file_patterns.each { |file_pattern|
+        begin
+          file = sftp.dir.[](remote_directory, file_pattern).sort_by { |file| file.attributes.mtime }.reverse.first
+          raise FileNotFound.new("File was not found") if file == nil
+        rescue FileNotFound, Net::SFTP::StatusException => e
+          puts "WARNING!!!:#{e.description}. File pattern: '#{remote_directory + '/' + file_pattern}'" unless silent
+          remote_files << nil
+          next
+        end
+        rf = RemoteFile.new(remote_directory + '/' + file.name)
+        rf.mtime = Time.at(file.attributes.mtime)
+        remote_files << rf
+      }
+
+      remote_files
+    end
+  end
+
+  class BaseFile
+
+    # =========================================== ACCESSORS start ============================================================
+    attr_reader :path
+    def path=(path)
+      @path = path.gsub(/\/$/, '')
+      @name = File.basename @path
+      @dir = File.dirname @path
+      @dir = '.' if @dir == @name
+      self
+    end
+    attr_reader :dir
+    attr_reader :name
+    attr_accessor :exist
+    attr_reader :mtime
+    def mtime=(value)
+      raise 'Wrong param type' if value.class != Time
+      @mtime = value
+      self.exist = true
+      self
+    end
+    attr_reader :will_rename
+    def will_rename=(value)
+      if value == false
+        @will_rename = false
+      else
+        self.desired_name = value
+        @will_rename = true
+      end
+      self
+    end
+    def desired_name
+      result = nil
+      if self.will_rename
+        result = @desired_name
+      else
+        result = @name
+      end
+      raise 'Rename result is nil' if result == nil
       result
     end
+    def desired_name=(name)
+      raise 'Wrong param type' if name.class != String
+      @desired_name = File.basename name
+      self
+    end
+    attr_accessor :overwrite
+
+    # =========================================== ACCESSORS end ============================================================
+
+    def initialize(path =  raise('Path is required field'), overwrite = false, rename = false )
+      @name = nil
+      @dir =  nil
+      self.path = path
+      @mtime = nil
+      @exist = nil
+      @desired_name = File.basename path
+      self.will_rename = rename
+      @overwrite = overwrite
+
+    end
+
   end
 
-
-  # Describes file on the local machine
-  class LocalFile
-    # @return [String] local file path
-    attr_accessor :path
-    # @return [String] path where file was uploaded
-    attr_accessor :upload_path
-    # @return [Date, nil] last modified time of remote file copy
-    attr_accessor :remote_file_time
-    # @return [true, false, nil] shows path where file was uploaded last time
-    attr_accessor :remote_file_exist
-    # @return [true, false] shows if file was successfully uploaded
+  class LocalFile < BaseFile
+    attr_accessor :upload_dir
     attr_accessor :uploaded
+    attr_accessor :remote_file_exist
 
-    # @param path[String] local file path
-    def initialize(path =  raise('Path is required field')    )
-      @path = path
-      @upload_path = nil
+    def initialize(path =  raise('Path is required field'), upload_dir = nil, overwrite = false, rename = false    )
+      super(path, overwrite, rename)
+      @upload_dir = upload_dir
       @uploaded = false
-      @remote_file_time = nil
       @remote_file_exist = nil
+    end
+
+    def upload_path
+      self.upload_dir + '/' + self.desired_name
     end
   end
 
+  class RemoteFile < BaseFile
 
-  # Describes file on the remote machine
-  class RemoteFile
-    
-    # @return [String] path OR GLOB PATTERN to find remote file. You can use Glob pattern only in file basename but not in dirname.
-    attr_accessor :path
-    # @return[:true, false, nil] shows if remote file exists on server
-    attr_accessor :remote_file_exist
-    # @return [Date, nil] last modified time of remote file
-    attr_accessor :remote_file_time
-    # @return [String] path where remote file was saved
-    attr_accessor :download_path
-    # @return [true, false] shows if file was successfully downloaded
+    # =========================================== ACCESSORS start ============================================================
+    attr_reader :download_dir
+    def download_dir=(path)
+      @download_dir = path.gsub(/\/$/, '')
+    end
     attr_accessor :downloaded
-    # @return [true, false] shows if local file exists
     attr_accessor :local_file_exist
 
-    # @param path[String] path OR GLOB PATTERN to find remote file. You can use Glob pattern only in file basename but not in dirname.
-    def initialize(path =  raise('Path is required field')    )
-      @path = path
-      @download_path = nil
+    # =========================================== ACCESSORS end ============================================================
+
+
+    def initialize(path =  raise('Path is required field'), download_dir = nil, overwrite = false, rename = false )
+      super(path, overwrite, rename)
+      @download_dir = download_dir
       @downloaded = false
-      @remote_file_time = nil
-      @remote_file_exist = nil
       @local_file_exist = nil
     end
 
+    def download_path
+      self.download_dir + '/' + self.desired_name
+    end
+
+  end
+
+  class FileNotFound < StandardError
+    attr_reader :description
+
+    def initialize(description)
+      @description = description
+    end
   end
 
 end
-
-
