@@ -119,6 +119,7 @@ module SimpleDownloader
             result_file.print remote_file_content
             result_file.close
             remote_file.downloaded = true
+            remote_file.download_dir = File.dirname File.realpath(download_path_with_rename_opts)
 
           else
             raise "There is no file to download #{remote_file.path}"
@@ -255,30 +256,43 @@ module SimpleDownloader
           raise 'Invalid remote file name parameter'
       end
 
+      case self.protocol
+        when 'sftp'
+          # use existing connection
+          self.connect if self.connection == nil
+          sftp = self.connection
+          begin
+            files = sftp.dir.[](remote_directory, file_pattern).sort_by { |file| file.attributes.mtime }.reverse.select { |f| !f.directory? }
+            raise FileNotFound.new("File was not found") if files == []
+          rescue FileNotFound, Net::SFTP::StatusException => e
+            puts "WARNING!!!:#{e.description}. File pattern: '#{remote_directory + '/' + file_pattern}'" unless silent
+          end
+          found_files = []
+          if count.class == Fixnum
+            files = files.first(count)
+          end
+          files.each do |file|
+            rf = RemoteFile.new(remote_directory + '/' + file.name)
+            rf.mtime = Time.at(file.attributes.mtime)
+            found_files << rf
+          end
+        else
+          raise "Unsupported protocol #{self.protocol}"
+      end
 
+      found_files
+    end
+
+    def storage_operation(&block)
+      case self.protocol
+        when 'sftp'
       # use existing connection
       self.connect if self.connection == nil
       sftp = self.connection
-
-      begin
-        files = sftp.dir.[](remote_directory, file_pattern).select {|f| !f.directory?}.sort_by { |file| file.attributes.mtime }.reverse
-        raise FileNotFound.new("File was not found") if files == []
-      rescue FileNotFound, Net::SFTP::StatusException => e
-        puts "WARNING!!!:#{e.description}. File pattern: '#{remote_directory + '/' + file_pattern}'" unless silent
+          yield sftp
+        else
+          raise "Unsupported protocol #{self.protocol}"
       end
-
-      found_files = []
-
-      if count.class == Fixnum
-        files = files.first(count)
-      end
-
-      files.each do |file|
-        rf = RemoteFile.new(remote_directory + '/' + file.name)
-        rf.mtime = Time.at(file.attributes.mtime)
-        found_files << rf
-      end
-      found_files
     end
   end
 
