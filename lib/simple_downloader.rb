@@ -173,26 +173,37 @@ module SimpleDownloader
       local_file
     end
 
-    def check_remote_existence!(remote_file = raise('remote_file parameter is required'))
+    def check_remote_existence!(file_object = raise('remote_file parameter is required'))
       case self.protocol
         when 'sftp'
           # connect if not connected
           self.connect if self.connection == nil
           sftp = self.connection
           # Search remote file by its name pattern
-          found_on_remote = self.glob_remote_files(remote_file.dir, remote_file.name).first
-          if found_on_remote == nil
-            remote_file.exist = false
+          if file_object.class == RemoteFile
+            found_on_remote = self.glob_remote_files(file_object.dir, file_object.name).first
+            if found_on_remote == nil
+              file_object.exist = false
+            else
+              file_object.path = found_on_remote.path
+              file_object.exist = found_on_remote.exist
+              file_object.mtime = found_on_remote.mtime
+            end
+          elsif file_object.class == LocalFile
+            found_on_remote = self.glob_remote_files(file_object.upload_dir, file_object.desired_name).first
+            if found_on_remote == nil
+              file_object.exist = false
+            else
+              file_object.remote_file_exist = found_on_remote.exist
+            end
           else
-            remote_file.path = found_on_remote.path
-            remote_file.exist = found_on_remote.exist
-            remote_file.mtime = found_on_remote.mtime
+            raise "Unsupported file object"
           end
 
         else
           raise "Unsupported protocol"
       end
-      remote_file
+      file_object
     end
 
     def move_remote_file!(remote_file = raise("remote_file_object is required"), new_directory = raise("new_directory is required"), opts = {})
@@ -245,7 +256,7 @@ module SimpleDownloader
       remote_file
     end
 
-    def glob_remote_files(remote_directory, remote_file_name = nil, count = 1, silent = true)
+    def glob_remote_files(remote_directory, remote_file_name = nil, count = 1)
       remote_directory.gsub!(/\/$/, '')
       case remote_file_name
         when NilClass
@@ -265,17 +276,21 @@ module SimpleDownloader
             files = sftp.dir.[](remote_directory, file_pattern).sort_by { |file| file.attributes.mtime }.reverse.select { |f| !f.directory? }
             raise FileNotFound.new("File was not found") if files == []
           rescue FileNotFound, Net::SFTP::StatusException => e
-            puts "WARNING!!!:#{e.description}. File pattern: '#{remote_directory + '/' + file_pattern}'" unless silent
+            puts "WARNING!!!:#{e.description}. File pattern: '#{remote_directory + '/' + file_pattern}'"
           end
           found_files = []
-          if count.class == Fixnum
-            files = files.first(count)
+
+          if files != nil
+            if count.class == Fixnum
+              files = files.first(count)
+            end
+            files.each do |file|
+              rf = RemoteFile.new(remote_directory + '/' + file.name)
+              rf.mtime = Time.at(file.attributes.mtime)
+              found_files << rf
+            end
           end
-          files.each do |file|
-            rf = RemoteFile.new(remote_directory + '/' + file.name)
-            rf.mtime = Time.at(file.attributes.mtime)
-            found_files << rf
-          end
+
         else
           raise "Unsupported protocol #{self.protocol}"
       end
@@ -293,6 +308,26 @@ module SimpleDownloader
         else
           raise "Unsupported protocol #{self.protocol}"
       end
+    end
+
+    def remove_remote_file(remote_file = raise('Remote file required'))
+      case self.protocol
+        when 'sftp'
+          # use existing connection
+          self.connect if self.connection == nil
+          sftp = self.connection
+          check_remote_existence!(remote_file)
+          # if remote file was found...
+          if remote_file.exist
+            sftp.remove!(remote_file.path)
+            remote_file.exist = false
+          else
+            raise "There is no file to download #{remote_file.path}"
+          end
+        else
+          raise "Unsupported protocol #{self.protocol}"
+      end
+      remote_file
     end
   end
 
