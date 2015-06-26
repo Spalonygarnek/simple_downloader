@@ -159,6 +159,29 @@ module SimpleDownloader
                 raise 'File cannot be uploaded because remote file with the same name exists'
               end
             end
+
+            # creating directories recursively
+
+            splitted_directory = File.dirname(upload_path_with_rename_opts).split('/').drop(1).map{|i| '/' + i}
+            smart_dir = ''
+            splitted_directory.each { |part|
+              begin
+                smart_dir += part
+              sftp.mkdir! smart_dir
+              rescue Net::SFTP::StatusException => e
+                # verify if this returns 11. Your server may return
+                # something different like 4.
+                if [4, 11].include? e.code
+                  # directory already exists. Carry on..
+                  puts "Folder already exist #{smart_dir}"
+                else
+                  raise
+                end
+              end
+            }
+
+
+
             sftp.upload!(local_file.path, upload_path_with_rename_opts)
             # save information about uploaded file
             local_file.uploaded = true
