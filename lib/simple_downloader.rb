@@ -280,6 +280,63 @@ module SimpleDownloader
     end
 
     def glob_remote_files(remote_directory, remote_file_name = nil, count = 1)
+      self.glob_remote(:file, remote_directory, remote_file_name, count)
+    end
+
+    def glob_remote_dirs(remote_directory, remote_file_name = nil, count = 1)
+      self.glob_remote(:dir, remote_directory, remote_file_name, count)
+    end
+
+    def storage_operation(&block)
+      case self.protocol
+        when 'sftp'
+      # use existing connection
+      self.connect if self.connection == nil
+      sftp = self.connection
+          yield sftp
+        else
+          raise "Unsupported protocol #{self.protocol}"
+      end
+    end
+
+    def remove_remote_file(remote_file = raise('Remote file required'))
+      case self.protocol
+        when 'sftp'
+          # use existing connection
+          self.connect if self.connection == nil
+          sftp = self.connection
+
+          remote_file.is_dir = true
+          if remote_file.is_dir
+            child_files = self.glob_remote_files(remote_file.path, '**/*', :all)
+            child_files.each {|c|
+              sftp.remove!(c.path)
+            }
+            child_dirs = self.glob_remote_dirs(remote_file.path, '**/*', :all).sort_by{|a| a.path.length}.reverse
+            child_dirs.each {|dir|
+              sftp.rmdir! dir.path
+            }
+            sftp.rmdir! remote_file.path
+            remote_file.exist = false
+          else
+            check_remote_existence!(remote_file)
+            # if remote file was found...
+            if remote_file.exist
+              sftp.remove!(remote_file.path)
+              remote_file.exist = false
+            else
+              raise "There is no file to remove #{remote_file.path}"
+            end
+          end
+
+
+        else
+          raise "Unsupported protocol #{self.protocol}"
+      end
+      remote_file
+    end
+
+    def glob_remote(type, remote_directory, remote_file_name = nil, count = 1)
       remote_directory.gsub!(/\/$/, '')
       case remote_file_name
         when NilClass
@@ -296,7 +353,15 @@ module SimpleDownloader
           self.connect if self.connection == nil
           sftp = self.connection
           begin
-            files = sftp.dir.[](remote_directory, file_pattern).sort_by { |file| file.attributes.mtime }.reverse.select { |f| !f.directory? }
+            files = sftp.dir.[](remote_directory, file_pattern).sort_by { |file| file.attributes.mtime }.reverse.select { |f|
+              if type == :file
+                !f.directory?
+              elsif type == :dir
+                f.directory?
+              else
+                raise "Incorrect type"
+              end
+            }
             raise FileNotFound.new("File was not found") if files == []
           rescue FileNotFound, Net::SFTP::StatusException => e
             puts "WARNING!!!:#{e.description}. File pattern: '#{remote_directory + '/' + file_pattern}'"
@@ -321,37 +386,6 @@ module SimpleDownloader
       found_files
     end
 
-    def storage_operation(&block)
-      case self.protocol
-        when 'sftp'
-      # use existing connection
-      self.connect if self.connection == nil
-      sftp = self.connection
-          yield sftp
-        else
-          raise "Unsupported protocol #{self.protocol}"
-      end
-    end
-
-    def remove_remote_file(remote_file = raise('Remote file required'))
-      case self.protocol
-        when 'sftp'
-          # use existing connection
-          self.connect if self.connection == nil
-          sftp = self.connection
-          check_remote_existence!(remote_file)
-          # if remote file was found...
-          if remote_file.exist
-            sftp.remove!(remote_file.path)
-            remote_file.exist = false
-          else
-            raise "There is no file to download #{remote_file.path}"
-          end
-        else
-          raise "Unsupported protocol #{self.protocol}"
-      end
-      remote_file
-    end
   end
 
   class BaseFile
@@ -444,7 +478,7 @@ module SimpleDownloader
     end
     attr_accessor :downloaded
     attr_accessor :local_file_exist
-
+    attr_accessor :is_dir
     # =========================================== ACCESSORS end ============================================================
 
 
@@ -453,6 +487,7 @@ module SimpleDownloader
       @download_dir = download_dir
       @downloaded = false
       @local_file_exist = nil
+      @is_dir = false
     end
 
     def download_path
