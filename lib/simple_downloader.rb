@@ -374,6 +374,7 @@ module SimpleDownloader
             files.each do |file|
               rf = RemoteFile.new(remote_directory + '/' + file.name)
               rf.mtime = Time.at(file.attributes.mtime)
+              rf.is_dir = true if type == :dir
               found_files << rf
             end
           end
