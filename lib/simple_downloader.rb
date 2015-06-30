@@ -306,7 +306,6 @@ module SimpleDownloader
           self.connect if self.connection == nil
           sftp = self.connection
 
-          remote_file.is_dir = true
           if remote_file.is_dir
             child_files = self.glob_remote_files(remote_file.path, '**/*', :all)
             child_files.each {|c|
