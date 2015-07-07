@@ -17,6 +17,7 @@ module SimpleDownloader
     attr_accessor :retry_timeout
     attr_accessor :retry_timeout_when_server_down
     attr_accessor :connection
+    attr_accessor :keys
 
     def initialize(
         protocol = raise('Protocol is required'),
@@ -36,10 +37,21 @@ module SimpleDownloader
 
       case @protocol
         when 'sftp'
-          default_options = {port: 22, retry_attempts: 3, retry_timeout: 10, retry_timeout_when_server_down: 180}
+          default_options = {
+              port: 22,
+              retry_attempts: 3,
+              retry_timeout: 10,
+              retry_timeout_when_server_down: 180,
+              keys: nil
+          }
 
         else
-          default_options = {retry_attempts: 3, retry_timeout: 10, retry_timeout_when_server_down: 180}
+          default_options = {
+              retry_attempts: 3,
+              retry_timeout: 10,
+              retry_timeout_when_server_down: 180,
+              keys: nil
+          }
       end
       # merge options
       options = default_options.update opts
@@ -54,6 +66,7 @@ module SimpleDownloader
       @retry_timeout = options[:retry_timeout]
       @retry_timeout_when_server_down = options[:retry_timeout_when_server_down]
       @connection = nil
+      @keys = options[:keys]
 
     end
 
@@ -66,7 +79,9 @@ module SimpleDownloader
               # Connecting using public/private keys if no password
               self.password != nil ?
                   options = {:password => self.password, :port => self.port} :
-                  options = {:port => self.port}
+                    self.keys != nil ?
+                        options = {:port => self.port, :keys => self.keys} :
+                        options = {:port => self.port}
               # create new connection
               session = Net::SSH.start(self.server, self.user, options)
               self.connection = Net::SFTP::Session.new(session).connect!
