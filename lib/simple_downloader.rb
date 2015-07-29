@@ -130,7 +130,7 @@ module SimpleDownloader
             end
 
             remote_file_content = sftp.download!(remote_file.path)
-            result_file = File.open(download_path_with_rename_opts, 'wb')
+            result_file = File.open(download_path_with_rename_opts, 'wb+')
             result_file.print remote_file_content
             result_file.close
             remote_file.downloaded = true
