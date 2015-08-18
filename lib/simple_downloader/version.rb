@@ -1,3 +1,3 @@
 module SimpleDownloader
-  VERSION = "3.3.8"
+  VERSION = "3.4.8"
 end

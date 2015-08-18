@@ -25,6 +25,7 @@ Gem::Specification.new do |spec|
   spec.add_development_dependency "yard", '~> 0.8.7', '>= 0.8.7.6'
   spec.add_dependency "net-sftp", '~> 2.1', '>= 2.1.2'
   spec.add_dependency "retryable", '~> 2.0', '>= 2.0.1'
-  spec.add_dependency "activesupport", '>= 4.1'
+  spec.add_dependency "activesupport", '~> 4.1', '>= 4.1.8'
+  spec.add_dependency "fileutils", '~> 0.7'
 
 end
