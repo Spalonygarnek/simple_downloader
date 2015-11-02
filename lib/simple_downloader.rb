@@ -75,33 +75,35 @@ module SimpleDownloader
       result = nil
       Retryable.retryable(:tries => self.retry_attempts, :matching => /connection closed by remote host/, :sleep => self.retry_timeout) do
         Retryable.retryable(:tries => self.retry_attempts, :matching => /getaddrinfo: Name or service not known/, :sleep => self.retry_timeout_when_server_down) do
-          case self.protocol
-            when 'sftp'
-              # Connecting using public/private keys if no password
-              options = {:port => self.port} # :keys_only => true, :timeout => 1
-              options[:verbose] = :debug if ENV['DEBUG'] == 'true'
-              options[:password] = self.password if self.password != nil
-              options[:keys] = self.keys if self.keys != nil
-              # create new connection
-              # todo Implement error when cannot connect for a long time
-              session = Net::SSH.start(self.server, self.user, options)
-              self.connection = Net::SFTP::Session.new(session).connect!
-              self.connection.state == :open ? result = true : result = false
+          Retryable.retryable(:tries => self.retry_attempts, :on => [Errno::ETIMEDOUT], :sleep => self.retry_timeout_when_server_down) do
+            case self.protocol
+              when 'sftp'
+                # Connecting using public/private keys if no password
+                options = {:port => self.port} # :keys_only => true, :timeout => 1
+                options[:verbose] = :debug if ENV['DEBUG'] == 'true'
+                options[:password] = self.password if self.password != nil
+                options[:keys] = self.keys if self.keys != nil
+                # create new connection
+                # todo Implement error when cannot connect for a long time
+                session = Net::SSH.start(self.server, self.user, options)
+                self.connection = Net::SFTP::Session.new(session).connect!
+                self.connection.state == :open ? result = true : result = false
 
-            when 'ftp'
-              require 'net/ftp'
-              # create new connection
-              user = self.user if self.user != nil
-              password = self.password if self.password != nil
-              params = [self.server, user, password]
-              self.connection = Net::FTP.open(*params)
-              self.connection.debug_mode=true if ENV['DEBUG'] == 'true'
-              self.connection.passive = true
+              when 'ftp'
+                require 'net/ftp'
+                # create new connection
+                user = self.user if self.user != nil
+                password = self.password if self.password != nil
+                params = [self.server, user, password]
+                self.connection = Net::FTP.open(*params)
+                self.connection.debug_mode=true if ENV['DEBUG'] == 'true'
+                self.connection.passive = true
 
-              self.connection.closed? ? result = false : result = true
+                self.connection.closed? ? result = false : result = true
 
-            else
-              raise "Unsupported protocol #{self.protocol}"
+              else
+                raise "Unsupported protocol #{self.protocol}"
+            end
           end
         end
       end
@@ -291,11 +293,12 @@ module SimpleDownloader
       self.glob_remote(:dir, remote_directory, remote_file_name, count)
     end
 
-    def remove_remote_file(remote_file = raise('Remote file required'))
-      # todo implement remove file or folder using is_dir
+    def remove_remote_file(remote_file = raise('Remote file required'), skip_if_not_exist = false)
       # use existing connection
       self.connect if self.connection == nil
       connection = self.connection
+
+      self.check_remote_existence!(remote_file) if remote_file.exist == nil
 
       if remote_file.is_dir
         child_files = self.glob_remote_files(remote_file.path, '**/*', :all)
@@ -315,7 +318,9 @@ module SimpleDownloader
           delete_remote_file(connection, remote_file.path)
           remote_file.exist = false
         else
-          raise "There is no file to remove #{remote_file.path}"
+          message = "There is no file to remove #{remote_file.path}"
+          puts message
+          raise message unless skip_if_not_exist
         end
       end
       remote_file
